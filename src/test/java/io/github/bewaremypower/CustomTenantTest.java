@@ -13,29 +13,20 @@
  */
 package io.github.bewaremypower;
 
+import io.github.bewaremypower.testcontainers.KsnCluster;
+import io.github.bewaremypower.testcontainers.KsnClusterConfig;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Properties;
-import java.util.concurrent.ExecutionException;
-import java.util.stream.Collectors;
-import java.util.stream.IntStream;
-
-import io.github.bewaremypower.testcontainers.KsnCluster;
-import io.github.bewaremypower.testcontainers.KsnClusterConfig;
-import org.apache.kafka.clients.admin.AdminClient;
-import org.apache.kafka.clients.admin.AdminClientConfig;
-import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.testng.Assert;
@@ -43,13 +34,14 @@ import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
-public class KafkaEndToEndTest {
+public class CustomTenantTest {
 
+    private static final String TENANT = "my-tenant";
     private KsnCluster cluster;
 
     @BeforeClass
     public void setup() throws IOException, InterruptedException {
-        cluster = new KsnCluster();
+        cluster = new KsnCluster(new KsnClusterConfig().setNumBrokers(1).addConfig("kafkaTenant", TENANT));
     }
 
     @AfterClass(alwaysRun = true)
@@ -60,27 +52,23 @@ public class KafkaEndToEndTest {
     }
 
     @Test
-    public void testPartitionedTopic() throws ExecutionException, InterruptedException {
-        final Properties adminProps = new Properties();
-        adminProps.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, cluster.getBootstrapServers());
-        final AdminClient client = AdminClient.create(adminProps);
-        final String topic = "test-partitioned-topic";
-        final int numPartitions = 8;
-        client.createTopics(Collections.singleton(new NewTopic(topic, 8, (short) 1))).all().get();
-        client.close();
-
+    public void test() throws Exception {
         final Properties producerProps = new Properties();
         producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, cluster.getBootstrapServers());
         producerProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         producerProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
 
-        final int messagesPerPartition = 10;
-        final int totalMessages = numPartitions * messagesPerPartition;
+        // These two topics represent the same topic
+        final String shortTopic = "my-topic";
+        final String longTopic = TENANT + "/default/my-topic";
+
         final KafkaProducer<String, String> producer = new KafkaProducer<>(producerProps);
-        for (int i = 0; i < totalMessages; i++) {
-            producer.send(new ProducerRecord<>(topic, i % numPartitions, null, "msg-" + i)).get();
-        }
+        final RecordMetadata metadata = producer.send(new ProducerRecord<>(shortTopic, "value")).get();
+        Assert.assertEquals(metadata.topic(), "my-topic");
+        Assert.assertEquals(metadata.partition(), 0);
+        Assert.assertEquals(metadata.offset(), 0);
         producer.close();
+
 
         final Properties consumerProps = new Properties();
         consumerProps.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, cluster.getBootstrapServers());
@@ -90,25 +78,12 @@ public class KafkaEndToEndTest {
         consumerProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
 
         final KafkaConsumer<String, String> consumer = new KafkaConsumer<>(consumerProps);
-        consumer.subscribe(Collections.singleton(topic));
-        long start = System.currentTimeMillis();
-        int receivedRecords = 0;
-        final Map<Integer, List<String>> partitionRecords = new HashMap<>();
-        while (receivedRecords < 100 && System.currentTimeMillis() - start < 10000) {
-            final ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(1));
-            receivedRecords += records.count();
-            records.forEach(record -> partitionRecords.computeIfAbsent(record.partition(), __ -> new ArrayList<>())
-                    .add(record.value()));
+        consumer.subscribe(Collections.singleton(longTopic));
+        final List<String> values = new ArrayList<>();
+        final long start = System.currentTimeMillis();
+        while (values.isEmpty() && System.currentTimeMillis() - start < 10000) {
+            consumer.poll(Duration.ofSeconds(1)).forEach(r -> values.add(r.value()));
         }
-        consumer.close();
-        Assert.assertEquals(partitionRecords.keySet(),
-                IntStream.range(0, numPartitions).boxed().collect(Collectors.toList()));
-        for (int i = 0; i < numPartitions; i++) {
-            final int partition = i;
-            final List<String> expectedValues = IntStream.range(0, messagesPerPartition)
-                    .mapToObj(j -> "msg-" + (j * numPartitions + partition))
-                    .collect(Collectors.toList());
-            Assert.assertEquals(partitionRecords.get(i), expectedValues);
-        }
+        Assert.assertEquals(values, Collections.singleton("value"));
     }
 }

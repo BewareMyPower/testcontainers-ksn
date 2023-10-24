@@ -52,7 +52,7 @@ class BrokerContainer extends GenericContainer<BrokerContainer> {
     private final int port;
 
     BrokerContainer(final DockerImageName imageName, final Network network, final String metadataStoreUrl,
-                    final String cluster) {
+                    final String cluster, final Map<String, String> extraConfigs) {
         super(imageName);
         int id = COUNT.getAndIncrement();
         this.host = HOST_PREFIX + id;
@@ -71,6 +71,7 @@ class BrokerContainer extends GenericContainer<BrokerContainer> {
                 .withExposedPorts(6650, 8080, INTERNAL_PORT)
                 .withCommand("bash " + STARTUP_SCRIPT_PATH);
         DEFAULT_CONFIGS.forEach(this::addBrokerConfig);
+        extraConfigs.forEach(this::addBrokerConfig);
     }
 
     int getPort() {

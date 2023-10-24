@@ -35,8 +35,12 @@ public class KsnCluster implements AutoCloseable {
     private final List<BrokerContainer> brokers;
     private final String bootstrapServers;
 
+    public KsnCluster() throws IOException, InterruptedException {
+        this(new KsnClusterConfig());
+    }
+
     public KsnCluster(final KsnClusterConfig config) throws IOException, InterruptedException {
-        final DockerImageName imageName = DockerImageName.parse(config.imageName);
+        final DockerImageName imageName = DockerImageName.parse(config.getImageName());
         zkContainer = new GenericContainer<>(imageName).withNetwork(network)
                 .withNetworkAliases(ZK_HOST)
                 .withEnv("PULSAR_MEM", "-Xmx256M")
@@ -54,8 +58,8 @@ public class KsnCluster implements AutoCloseable {
         if (result.getExitCode() != 0) {
             throw new IOException("Failed to initialize metadata");
         }
-        this.bookies = new ArrayList<>(config.numBookies);
-        for (int i = 0; i < config.numBookies; i++) {
+        this.bookies = new ArrayList<>(config.getNumBookies());
+        for (int i = 0; i < config.getNumBookies(); i++) {
             final String host = "bookie-" + i;
             final GenericContainer<?> bookie = new GenericContainer<>(imageName)
                     .withCopyFileToContainer(MountableFile.forClasspathResource("run-bookie.sh"),
@@ -72,10 +76,11 @@ public class KsnCluster implements AutoCloseable {
             bookie.start();
             bookies.add(bookie);
         }
-        this.brokers = new ArrayList<>(config.numBrokers);
+        this.brokers = new ArrayList<>(config.getNumBrokers());
         final StringBuilder builder = new StringBuilder();
-        for (int i = 0; i < config.numBrokers; i++) {
-            final BrokerContainer broker = new BrokerContainer(imageName, network, metadataStoreUrl, CLUSTER);
+        for (int i = 0; i < config.getNumBrokers(); i++) {
+            final BrokerContainer broker = new BrokerContainer(
+                    imageName, network, metadataStoreUrl, CLUSTER, config.configs);
             broker.start();
             brokers.add(broker);
             if (i > 0) {
@@ -86,10 +91,19 @@ public class KsnCluster implements AutoCloseable {
         this.bootstrapServers = builder.toString();
     }
 
+    /**
+     * Get the bootstrap servers string that is configured as the "bootstrap.servers" property to create a Kafka client.
+     */
     public String getBootstrapServers() {
         return bootstrapServers;
     }
 
+    /**
+     * Get the Pulsar web service URL that is used to construct a `PulsarAdmin`.
+     */
+    public String getPulsarWebServiceUrl() {
+        return "http://localhost:" + brokers.get(0).getMappedPort(8080);
+    }
 
     @Override
     public void close() {
